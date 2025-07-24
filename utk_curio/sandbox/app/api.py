@@ -41,49 +41,170 @@ def launchCwd():
 def sharedDataPath():
     return os.environ["CURIO_SHARED_DATA"]
 
+@app.route('/debug-env', methods=['GET'])
+def debug_env():
+    # Return environment variables and file paths for debugging
+    launch_dir = os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())
+    data_dir = os.path.join(launch_dir, "data")
+    
+    # Check if data directories exist
+    project_root_data = Path(__file__).parent.parent.parent / 'data'
+    
+    debug_info = {
+        "current_working_directory": os.getcwd(),
+        "CURIO_LAUNCH_CWD": os.environ.get("CURIO_LAUNCH_CWD", "Not set"),
+        "CURIO_SHARED_DATA": os.environ.get("CURIO_SHARED_DATA", "Not set"),
+        "data_dir_path": str(data_dir),
+        "data_dir_exists": os.path.exists(data_dir),
+        "project_root_data_path": str(project_root_data),
+        "project_root_data_exists": project_root_data.exists()
+    }
+    
+    # List files in data directories if they exist
+    if os.path.exists(data_dir):
+        debug_info["data_dir_files"] = os.listdir(data_dir)
+    
+    if project_root_data.exists():
+        debug_info["project_root_data_files"] = [f.name for f in project_root_data.iterdir()]
+    
+    return jsonify(debug_info)
+
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
         return 'No file part'
 
     file = request.files['file']
+
     if file.filename == '':
         return 'No selected file'
+        
+    # Check if file has an allowed extension
+    allowed_extensions = ['.json', '.geojson', '.csv']
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    
+    if file_ext not in allowed_extensions:
+        return f'File extension not allowed. Allowed extensions: {", ".join(allowed_extensions)}', 400
 
-    file.save(request.form['fileName'])
-
-    return file.filename
+    # Get the launch directory from environment variable or use current working directory
+    launch_dir = os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())
+    
+    # Create data directory path - try multiple possible locations
+    data_dir = os.path.join(launch_dir, "data")
+    shared_data_dir = os.environ.get("CURIO_SHARED_DATA", None)
+    
+    # Create data directory if it doesn't exist
+    os.makedirs(data_dir, exist_ok=True)
+    
+    # Debug logging
+    print(f"Current working directory: {os.getcwd()}")
+    print(f"CURIO_LAUNCH_CWD: {os.environ.get('CURIO_LAUNCH_CWD', 'Not set')}")
+    print(f"CURIO_SHARED_DATA: {os.environ.get('CURIO_SHARED_DATA', 'Not set')}")
+    print(f"Data directory path: {data_dir}")
+    print(f"Data directory exists: {os.path.exists(data_dir)}")
+    
+    # Save file to data directory
+    file_path = os.path.join(data_dir, file.filename)
+    file.save(file_path)
+    print(f"File saved to: {file_path}")
+    print(f"File exists after save: {os.path.exists(file_path)}")
+    
+    # If CURIO_SHARED_DATA is set and different from our data_dir, also save there as a backup
+    if shared_data_dir and os.path.normpath(shared_data_dir) != os.path.normpath(data_dir):
+        try:
+            os.makedirs(shared_data_dir, exist_ok=True)
+            shared_file_path = os.path.join(shared_data_dir, file.filename)
+            with open(file_path, 'rb') as src_file:
+                with open(shared_file_path, 'wb') as dst_file:
+                    dst_file.write(src_file.read())
+            print(f"File also saved to shared data dir: {shared_file_path}")
+            print(f"File exists in shared data dir: {os.path.exists(shared_file_path)}")
+        except Exception as e:
+            print(f"Error saving to shared data dir: {str(e)}")
+    
+    # List files in data directory after save
+    try:
+        print(f"Files in data directory after save: {os.listdir(data_dir)}")
+    except Exception as e:
+        print(f"Error listing files in data directory: {str(e)}")
+    
+    # Return JSON response with file path that Python process can access
+    # Use relative path from launch directory so Python can find it
+    relative_path = os.path.join("data", file.filename)
+    
+    return jsonify({
+        'success': True,
+        'message': 'File uploaded successfully',
+        'file_path': relative_path,  # This is what pandas will use
+        'full_path': file_path,      # Full absolute path for debugging
+        'filename': file.filename
+    })
 
 @app.route('/datasets', methods=['GET'])
 def list_datasets():
     allowed_extensions = {'.json', '.geojson', '.csv'}
 
     files = []
+    
+    # Debug: Print current working directory and environment variables
+    print(f"Current working directory: {os.getcwd()}")
+    print(f"CURIO_LAUNCH_CWD: {os.environ.get('CURIO_LAUNCH_CWD', 'Not set')}")
+    print(f"CURIO_SHARED_DATA: {os.environ.get('CURIO_SHARED_DATA', 'Not set')}")
 
     # Source 1: /data relative to the root of the installed pip package
     project_root_data = Path(__file__).parent.parent.parent / 'data'
     print("Loading datasets from pip package location:", project_root_data)
+    print(f"Pip package data directory exists: {project_root_data.exists()}")
 
     if project_root_data.exists() and project_root_data.is_dir():
-        files.extend([
-            f.as_posix() for f in project_root_data.iterdir()
-            if f.is_file() and f.suffix.lower() in allowed_extensions
-        ])
+        try:
+            pip_files = [f.name for f in project_root_data.iterdir() 
+                        if f.is_file() and f.suffix.lower() in allowed_extensions]
+            print(f"Files found in pip package data directory: {pip_files}")
+            files.extend(pip_files)
+        except Exception as e:
+            print(f"Error listing files in pip package data directory: {str(e)}")
 
     # Source 2: /data relative to current working directory
-    # cwd_data = os.getcwd() / 'data'
     launch_dir = os.environ.get("CURIO_LAUNCH_CWD", os.getcwd())
     data_dir = os.path.join(launch_dir, "data")
     data_dir = Path(data_dir)
     print("Loading datasets from working directory:", data_dir)
+    print(f"Working directory data directory exists: {data_dir.exists()}")
 
     if data_dir.exists() and data_dir.is_dir():
-        files.extend([
-            f.as_posix() for f in data_dir.iterdir()
-            if f.is_file() and f.suffix.lower() in allowed_extensions
-        ])
-
-    return jsonify(files)
+        try:
+            working_dir_files = [f.name for f in data_dir.iterdir() 
+                               if f.is_file() and f.suffix.lower() in allowed_extensions]
+            print(f"Files found in working directory data directory: {working_dir_files}")
+            files.extend(working_dir_files)
+        except Exception as e:
+            print(f"Error listing files in working directory data directory: {str(e)}")
+    
+    # Source 3: Try CURIO_SHARED_DATA if it's set and different from data_dir
+    shared_data_dir = os.environ.get("CURIO_SHARED_DATA", None)
+    if shared_data_dir and os.path.exists(shared_data_dir):
+        shared_data_path = Path(shared_data_dir)
+        print(f"Loading datasets from shared data directory: {shared_data_path}")
+        print(f"Shared data directory exists: {shared_data_path.exists()}")
+        
+        if shared_data_path.exists() and shared_data_path.is_dir():
+            try:
+                shared_files = [f.name for f in shared_data_path.iterdir() 
+                              if f.is_file() and f.suffix.lower() in allowed_extensions]
+                print(f"Files found in shared data directory: {shared_files}")
+                files.extend(shared_files)
+            except Exception as e:
+                print(f"Error listing files in shared data directory: {str(e)}")
+    
+    # Remove duplicates while preserving order
+    unique_files = []
+    for file in files:
+        if file not in unique_files:
+            unique_files.append(file)
+    
+    print(f"Total unique files to return: {unique_files}")
+    return jsonify(unique_files)
 
 @app.route('/exec', methods=['POST'])
 # @cache.cached(make_cache_key=make_key)

@@ -120,15 +120,6 @@ def launchCwd():
 def sharedDataPath():
     return os.environ["CURIO_SHARED_DATA"]
 
-@bp.route('/debug-env', methods=['GET'])
-def debug_env():
-    # Forward the request to the sandbox API
-    try:
-        response = requests.get(api_address+":"+str(api_port)+"/debug-env")
-        return response.json(), response.status_code
-    except Exception as e:
-        return {"error": str(e), "backend_url": api_address+":"+str(api_port)}, 500
-
 @bp.route('/upload', methods=['POST'])
 def upload_file():
 
